@@ -87,7 +87,7 @@ def main():
         lr=0.001
     )
 
-    # Main training and testing loop with MAD reporting for parameters
+    # Main training loop with correct MSE and MAD reporting for parameters
     for epoch in range(num_epochs):
         print(f"Epoch {epoch+1}/{num_epochs}")
 
@@ -96,15 +96,19 @@ def main():
         reg_net_g2.train()
         reg_net_g3.train()
 
-        epoch_loss = 0.0  # Track the total loss for the epoch
+        epoch_loss = 0.0  # Track the total MSE loss for the epoch
         t_x_loss, t_y_loss, t_z_loss = 0.0, 0.0, 0.0  # For g1 outputs
         t_theta_loss, t_alpha_loss = 0.0, 0.0  # For g2 outputs
         t_beta_loss = 0.0  # For g3 output
+        num_samples = 0  # To track number of samples
 
         with tqdm(train_loader, unit="batch") as tepoch:
             tepoch.set_description(f"Epoch {epoch+1}/{num_epochs}")
 
             for ct, data, target in tepoch:
+                batch_size = data.size(0)
+                num_samples += batch_size
+
                 optimizer.zero_grad()  # Zero the gradients
 
                 # Initial batch-size zeros for transformations
@@ -124,16 +128,16 @@ def main():
                 output3 = reg_net_g3(drr_2 - data)
                 curr_t[:, 5:6] = output3
 
-                # Compute the total loss between predicted transformations and target
+                # Compute the total loss between predicted transformations and target (MSE)
                 total_loss = criterion(curr_t, target)
 
                 # Compute mean absolute differences for each transformation parameter for reporting only
-                t_x_loss += torch.mean(torch.abs(curr_t[:, 0] - target[:, 0])).item()
-                t_y_loss += torch.mean(torch.abs(curr_t[:, 1] - target[:, 1])).item()
-                t_z_loss += torch.mean(torch.abs(curr_t[:, 2] - target[:, 2])).item()
-                t_theta_loss += torch.mean(torch.abs(curr_t[:, 3] - target[:, 3])).item()
-                t_alpha_loss += torch.mean(torch.abs(curr_t[:, 4] - target[:, 4])).item()
-                t_beta_loss += torch.mean(torch.abs(curr_t[:, 5] - target[:, 5])).item()
+                t_x_loss += torch.sum(torch.abs(curr_t[:, 0] - target[:, 0])).item()
+                t_y_loss += torch.sum(torch.abs(curr_t[:, 1] - target[:, 1])).item()
+                t_z_loss += torch.sum(torch.abs(curr_t[:, 2] - target[:, 2])).item()
+                t_theta_loss += torch.sum(torch.abs(curr_t[:, 3] - target[:, 3])).item()
+                t_alpha_loss += torch.sum(torch.abs(curr_t[:, 4] - target[:, 4])).item()
+                t_beta_loss += torch.sum(torch.abs(curr_t[:, 5] - target[:, 5])).item()
 
                 # Backward pass (compute gradients)
                 total_loss.backward()
@@ -141,21 +145,21 @@ def main():
                 # Update weights for all three networks
                 optimizer.step()
 
-                # Accumulate the total loss for the epoch
+                # Accumulate the total MSE loss for the epoch (MSE is already averaged per batch)
                 epoch_loss += total_loss.item()
 
-                # Update the progress bar with individual parameter MADs
+                # Update the progress bar with individual parameter MADs per sample
                 tepoch.set_postfix(
-                    total_loss=total_loss.item(),
-                    t_x=t_x_loss / len(train_loader),
-                    t_y=t_y_loss / len(train_loader),
-                    t_z=t_z_loss / len(train_loader),
-                    t_theta=t_theta_loss / len(train_loader),
-                    t_alpha=t_alpha_loss / len(train_loader),
-                    t_beta=t_beta_loss / len(train_loader)
+                    total_loss=epoch_loss / len(train_loader),  # MSE loss averaged over all batches
+                    t_x=t_x_loss / num_samples,  # MAD for t_x
+                    t_y=t_y_loss / num_samples,  # MAD for t_y
+                    t_z=t_z_loss / num_samples,  # MAD for t_z
+                    t_θ=t_theta_loss / num_samples,  # MAD for θ (theta)
+                    t_α=t_alpha_loss / num_samples,  # MAD for α (alpha)
+                    t_β=t_beta_loss / num_samples  # MAD for β (beta)
                 )
 
-        print(f"Epoch {epoch+1} completed. Average train loss (MSE): {epoch_loss / len(train_loader):.4f}")
+        print(f"Epoch {epoch+1} completed. Average train loss (MSE): {epoch_loss/len(train_loader):.4f}")
 
         # Testing at the end of each epoch
         avg_test_loss = test_model(test_loader, reg_net_g1, reg_net_g2, reg_net_g3, criterion, device)
@@ -166,22 +170,26 @@ def test_model(test_loader, reg_net_g1, reg_net_g2, reg_net_g3, criterion, devic
     reg_net_g2.eval()  
     reg_net_g3.eval()  
 
-    test_loss = 0.0  # Track the total test loss
+    test_loss = 0.0  # Track the total test loss (MSE)
     t_x_loss, t_y_loss, t_z_loss = 0.0, 0.0, 0.0  # For g1 outputs
     t_theta_loss, t_alpha_loss = 0.0, 0.0  # For g2 outputs
     t_beta_loss = 0.0  # For g3 output
+    num_samples = 0  # Track the number of samples
 
     with torch.no_grad():  # No gradient computation in the test phase
         with tqdm(test_loader, unit="batch") as tepoch:
             tepoch.set_description(f"Testing")
             for ct, data, target in tepoch:
+                batch_size = data.size(0)
+                num_samples += batch_size
+
                 # Move data to the GPU
                 ct = ct.to(device)
                 data = data.to(device)
                 target = target.to(device)
 
                 # Initial batch-size zeros for transformations
-                curr_t = torch.zeros((data.size(0), 6)).to(device)  # Adjust for batch size
+                curr_t = torch.zeros((data.size(0), 6)).to(device)
 
                 # Forward pass for first network
                 output1 = reg_net_g1(data)
@@ -197,29 +205,29 @@ def test_model(test_loader, reg_net_g1, reg_net_g2, reg_net_g3, criterion, devic
                 output3 = reg_net_g3(drr_2 - data)
                 curr_t[:, 5:6] = output3
 
-                # Compute the total loss (using the original criterion, e.g., MSE)
+                # Compute the total loss (MSE)
                 total_loss = criterion(curr_t, target)
 
                 # Compute mean absolute differences for each transformation parameter for reporting only
-                t_x_loss += torch.mean(torch.abs(curr_t[:, 0] - target[:, 0])).item()
-                t_y_loss += torch.mean(torch.abs(curr_t[:, 1] - target[:, 1])).item()
-                t_z_loss += torch.mean(torch.abs(curr_t[:, 2] - target[:, 2])).item()
-                t_theta_loss += torch.mean(torch.abs(curr_t[:, 3] - target[:, 3])).item()
-                t_alpha_loss += torch.mean(torch.abs(curr_t[:, 4] - target[:, 4])).item()
-                t_beta_loss += torch.mean(torch.abs(curr_t[:, 5] - target[:, 5])).item()
+                t_x_loss += torch.sum(torch.abs(curr_t[:, 0] - target[:, 0])).item()
+                t_y_loss += torch.sum(torch.abs(curr_t[:, 1] - target[:, 1])).item()
+                t_z_loss += torch.sum(torch.abs(curr_t[:, 2] - target[:, 2])).item()
+                t_theta_loss += torch.sum(torch.abs(curr_t[:, 3] - target[:, 3])).item()
+                t_alpha_loss += torch.sum(torch.abs(curr_t[:, 4] - target[:, 4])).item()
+                t_beta_loss += torch.sum(torch.abs(curr_t[:, 5] - target[:, 5])).item()
 
-                # Accumulate the total loss for training (MSE)
+                # Accumulate the total test loss (MSE is already averaged per batch)
                 test_loss += total_loss.item()
 
-                # Update the progress bar with individual parameter mean absolute differences
+                # Update the progress bar with individual parameter MADs per sample
                 tepoch.set_postfix(
-                    test_loss=test_loss / len(test_loader),
-                    t_x=t_x_loss / len(test_loader),
-                    t_y=t_y_loss / len(test_loader),
-                    t_z=t_z_loss / len(test_loader),
-                    t_theta=t_theta_loss / len(test_loader),
-                    t_alpha=t_alpha_loss / len(test_loader),
-                    t_beta=t_beta_loss / len(test_loader)
+                    test_loss=test_loss / len(test_loader),  # MSE loss (MSE averaged over all batches)
+                    t_x=t_x_loss / num_samples,  # MAD for t_x
+                    t_y=t_y_loss / num_samples,  # MAD for t_y
+                    t_z=t_z_loss / num_samples,  # MAD for t_z
+                    t_θ=t_theta_loss / num_samples,  # MAD for θ (theta)
+                    t_α=t_alpha_loss / num_samples,  # MAD for α (alpha)
+                    t_β=t_beta_loss / num_samples  # MAD for β (beta)
                 )
 
     avg_test_loss = test_loss / len(test_loader)
